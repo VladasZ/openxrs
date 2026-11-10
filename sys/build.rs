@@ -1,15 +1,34 @@
 fn main() {
     #[cfg(feature = "static")]
     {
-        let dst = cmake::Config::new("OpenXR-SDK")
-            .define("BUILD_API_LAYERS", "OFF")
+        let mut cfg = cmake::Config::new("OpenXR-SDK");
+        cfg.define("BUILD_API_LAYERS", "OFF")
             .define("BUILD_TESTS", "OFF")
             .define("OpenGL_GL_PREFERENCE", "GLVND")
             .define("DYNAMIC_LOADER", "OFF")
             .define("CMAKE_INSTALL_LIBDIR", "lib")
             .define("BUILD_WITH_SYSTEM_JSONCPP", "OFF") // See https://github.com/KhronosGroup/OpenXR-SDK-Source/issues/481
-            .profile("Release")
-            .build();
+            .profile("Release");
+        // The loader's CMakeLists forces the DLL C runtime for a static
+        // loader on MSVC, which fails to link into a binary built with
+        // `crt-static`. A project include defers the runtime of the loader
+        // to the end of the configure, after that rule ran.
+        let crt_static = std::env::var("CARGO_CFG_TARGET_FEATURE")
+            .is_ok_and(|features| features.split(',').any(|feature| feature == "crt-static"));
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") && crt_static {
+            let out = std::env::var_os("OUT_DIR").expect("missing OUT_DIR environment variable");
+            let include = std::path::Path::new(&out).join("static_crt.cmake");
+            std::fs::write(
+                &include,
+                "cmake_language(DEFER DIRECTORY \"${CMAKE_SOURCE_DIR}\" CALL set_target_properties openxr_loader PROPERTIES MSVC_RUNTIME_LIBRARY MultiThreaded)\n",
+            )
+            .expect("failed to write static_crt.cmake");
+            cfg.define(
+                "CMAKE_PROJECT_INCLUDE",
+                include.to_string_lossy().replace('\\', "/"),
+            );
+        }
+        let dst = cfg.build();
 
         println!(
             "cargo:rustc-link-search=native={}",
